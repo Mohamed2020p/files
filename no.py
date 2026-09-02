@@ -1,113 +1,93 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-no.py -- sx.py fully decoded, written as plain runnable Python code.
+# no.py = sx.py completely decoded. All encodings (base64, base85, bytes([...]))
+# are removed and replaced with real Python code and literal strings.
+# Run:  python3 no.py   (decodes everything from sx.py, verifies it, extracts it)
+#
+# The file sx.py is 493,406 bytes. 492,744 of those bytes (99.87%) are ONE
+# base64 string (AH) holding a ZIP with a 1.68 MB compiled ARM64 binary
+# ("DEMO"). The actual Python code in the whole chain is the ~40 lines you
+# see below -- everything that exists, decoded 100%.
+#
+# About DEMO: it is NOT encoded Python. It is machine code produced by a
+# compiler (Cython 3.2.5 -> C -> native ARM64). Nothing in it is encrypted,
+# so there is nothing to decrypt: the Python source it was built from simply
+# does not exist inside it, the same way a .exe has no C++ source inside.
+# Verified: no PyInstaller archive, no .pyc bytecode, no source strings.
 
-Every encoding layer has been removed and replaced with real code / literal
-strings. Nothing else was changed.
-
-    LAYER 0  sx.py loader ........ plain code (kept as-is, see layer0_original)
-    LAYER 1  AH base64 string .... decoded here to the hidden ZIP archive
-    LAYER 2  base85 + exec() ..... decoded here to plain Python source
-    LAYER 3  bytes([...]) tricks . replaced with their literal strings
-    LAYER 4  DEMO ................ Cython-compiled ARM64 machine code.
-                                  TERMINAL LAYER: it is a native binary, not
-                                  an encoding of Python. There is no Python
-                                  source or bytecode inside it to decrypt --
-                                  recovering logic from it is binary
-                                  decompilation, which no decoder can do.
-
-Run this file:  python3 no.py
-It re-derives and verifies every layer from sx.py, extracts the archive
-entries into ./no_decoded/ for inspection, and prints the decoded payload.
-It does NOT execute the DEMO binary.
-"""
-
+import ast
+import atexit
 import base64
 import io
 import os
 import re
+import shutil
+import subprocess
+import sys
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SX_PATH = os.path.join(HERE, "sx.py")
-OUT_DIR = os.path.join(HERE, "no_decoded")
+SX = os.path.join(HERE, "sx.py")
+OUT = os.path.join(HERE, "no_decoded")
 
 
-# ---------------------------------------------------------------------------
-# LAYER 1 -- AH (the 492,744-char base64 string in sx.py) -> ZIP archive bytes
-# ---------------------------------------------------------------------------
-def layer1_ah_base64():
-    """Return the raw AH base64 text exactly as it appears in sx.py."""
-    src = open(SX_PATH, "r", encoding="utf-8", errors="replace").read()
-    m = re.search(r'^AH\s*=\s*"(.*)"\s*$', src, re.M)
-    if not m:
-        raise SystemExit("AH string not found in sx.py")
-    return m.group(1)
+# ===========================================================================
+# PART 1 -- the AH string from sx.py, decoded
+# ===========================================================================
+def ah_decoded():
+    """AH was a 492,744-character base64 string. Decoded, it is this ZIP."""
+    src = open(SX, "r", encoding="utf-8", errors="replace").read()
+    ah = re.search(r'^AH\s*=\s*"(.*)"\s*$', src, re.M).group(1)
+    return base64.b64decode(ah)          # 369,557 bytes, starts with PK\x03\x04
 
 
-def layer1_zip_bytes():
-    """AH decoded: base64 -> the hidden ZIP archive (369,557 bytes)."""
-    return base64.b64decode(layer1_ah_base64())
-
-
-# ---------------------------------------------------------------------------
-# LAYER 2 -- the archived __main__.py, base85+exec removed -> plain source
-# ---------------------------------------------------------------------------
-def layer2_main_py_original():
-    """Literal source of the ZIP entry __main__.py (encoding still inside)."""
-    z = zipfile.ZipFile(io.BytesIO(layer1_zip_bytes()))
-    return z.read("__main__.py").decode("utf-8")
-
-
-def layer3_payload_source():
-    """__main__.py with the base85 layer decoded (bytes([...]) still intact).
-
-    This is byte-for-byte what exec() received:
-
-        import os
-        import sys
-        os.system(bytes([...]).decode()+sys.prefix+ ... +\"DEMO\")
-    """
-    inner = layer2_main_py_original()
-    m = re.search(r"b85decode\(b'(.*?)'\)", inner, re.S)
-    if not m:
-        raise SystemExit("base85 blob not found in __main__.py")
-    return base64.b85decode(m.group(1)).decode("utf-8")
-
-
-# ---------------------------------------------------------------------------
-# LAYERS 2+3 COMBINED -- the decoded payload, every obfuscation removed.
+# ===========================================================================
+# PART 2 -- the hidden script that sx.py ran (__main__.py), fully decoded
 #
-# This is the complete, deepest Python that exists inside sx.py:
-# ---------------------------------------------------------------------------
-def payload_decoded():
-    """Exact decoded body of __main__.py (NOT called by this file).
-
-    Original obfuscated form used bytes([101,120,112,...]) arrays; decoded:
-        bytes([101,120,112,111,114,116,32,80,89,84,72,79,78,72,79,77,69,61])          -> "export PYTHONHOME="
-        bytes([32,38,38,32])                                                          -> " && "
-        bytes([101,120,112,111,114,116,32,80,89,84,72,79,78,95,69,88,69,67,85,84,65,66,76,69,61]) -> "export PYTHON_EXECUTABLE="
-        bytes([46,47])                                                                 -> "./"
-    """
+# In sx.py it looked like this:
+#     from base64 import b85decode
+#     exec(b85decode(b'3TbU{Z*p`XZ*vN1ZE$aLbRctia|&;BE^~Q...'))
+# ...and inside THAT, the strings were hidden as byte arrays:
+#     bytes([101,120,112,111,114,116,32,80,89,84,72,79,78,72,79,77,69,61])
+#     bytes([32,38,38,32])
+#     bytes([101,120,112,111,114,116,32,80,89,84,72,79,78,95,69,88,69,67,
+#            85,84,65,66,76,69,61])
+#     bytes([46,47])
+#
+# Here it is with EVERY encoding removed. This is the entire script --
+# all of it, word for word:
+# ===========================================================================
+def decoded_hidden_script():
     import os
     import sys
-    os.system(
-        "export PYTHONHOME=" + sys.prefix
-        + " && export PYTHON_EXECUTABLE=" + sys.executable
-        + " && ./DEMO"
-    )
+    os.system("export PYTHONHOME=" + sys.prefix + " && export PYTHON_EXECUTABLE=" + sys.executable + " && ./DEMO")
 
 
-# ---------------------------------------------------------------------------
-# LAYER 0 -- the sx.py dropper, written plainly (logic unchanged).
-# Kept as a function for reference; NOT called by this file.
-# ---------------------------------------------------------------------------
-def layer0_original():
-    import atexit
-    import shutil
-    import subprocess
+# Its exact original text (base85 blob and byte arrays intact), for reference:
+HIDDEN_SCRIPT_ORIGINAL = (
+    "\n\n#Dec_it_If_You_Can \n\n#BY DEMO\n\n"
+    "from base64 import b85decode\n"
+    "exec(b85decode(b'3TbU{Z*p`XZ*vN1ZE$aLbRctia|&;BE^~QvbY*QQVtI6Bb0}LeFflA3F)}"
+    "bLATcpAEFdv4F)Sc4F*Gb7F)=nQATu&7AUH5AAUHWJAUHHEAU85BAU8QIAU8NHAU85BAU8QIAU8KG"
+    "AT~KHAT}{wDK2DXV{c?-C@Cv*d2=psa%E;|cq?LgbY*iWTQf2&ATu~DATu~DATu&uDK2DXV{c?-C"
+    "@Cvqd30rSC|fZwF)Sc4GB7M4F)=bMATcp9EFdv4G%O%7F*Yn9Gcqh7I4~?AI5{jJI5aFEH!>_BH#"
+    "saIH#jUHIW;UGHaRRHI5;dIHaRRHHa9FFI5jLFI5aFEHZ?3DHa09EH#RIFHaRRHHZff(E@Wk6Z)9a"
+    "CDJye%b1r3gWn*=8VPb4$D`I(cWpgN7Gcqh7GdL_DGdL_DGcsK%E@Wk6Z)9aCDJx=mbY*iWTQoK-"
+    "AT&2!DK2DXV{c?-C@CN-AR<IXO-~{z3I'))\n"
+)
 
+
+def decode_hidden_script_from_sx():
+    """Decode the hidden script straight out of sx.py and return its source."""
+    zf = zipfile.ZipFile(io.BytesIO(ah_decoded()))
+    inner = zf.read("__main__.py").decode("utf-8")
+    blob = re.search(r"b85decode\(b'(.*?)'\)", inner, re.S).group(1)
+    return base64.b85decode(blob).decode("utf-8")
+
+
+# ===========================================================================
+# PART 3 -- sx.py itself, decoded end to end (logic unchanged, AH resolved)
+# ===========================================================================
+def decoded_sxpy():
     MyHome = os.path.expanduser("~")
     PYDEMO = os.path.join(MyHome, ".PYDEMO")
 
@@ -116,7 +96,7 @@ def layer0_original():
 
     atexit.register(cleanup)
 
-    Dev = layer1_zip_bytes()                     # was: base64.b64decode(AH)
+    Dev = ah_decoded()                                # was: base64.b64decode(AH)
 
     os.makedirs(PYDEMO, exist_ok=True)
     Mahos = os.path.join(PYDEMO, ".dem")
@@ -133,82 +113,43 @@ def layer0_original():
         shutil.rmtree(PYDEMO, ignore_errors=True)
 
 
-# ---------------------------------------------------------------------------
-# LAYER 4 -- DEMO identification (terminal layer; native binary, not Python)
-# ---------------------------------------------------------------------------
-def layer4_report():
-    z = zipfile.ZipFile(io.BytesIO(layer1_zip_bytes()))
-    d = z.read("DEMO")
-    is_elf = d[:4] == b"\x7fELF"
-    arch = {0xB7: "AArch64 (ARM64)", 0x3E: "x86-64", 0x28: "ARM32"}.get(d[18], hex(d[18]))
-    cython = re.search(rb"_cython_(\d+(?:_\d+)+)", d)
-    pyinit = re.search(rb"(PyInit_[A-Za-z0-9_]+)", d)
-    return {
-        "size": len(d),
-        "elf": is_elf,
-        "arch": arch,
-        "cython": cython.group(1).replace(b"_", b".").decode() if cython else "n/a",
-        "module": pyinit.group(1).decode() if pyinit else "n/a",
-    }
-
-
-# ---------------------------------------------------------------------------
-# Driver -- decodes everything, verifies it, writes the extraction for you
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Driver: decode everything, verify, extract
+# ===========================================================================
 def main():
-    src_size = os.path.getsize(SX_PATH)
-    print("=" * 68)
-    print(" sx.py -> no.py : FULL DECODE")
-    print("=" * 68)
+    src = open(SX, "r", encoding="utf-8", errors="replace").read()
+    ah = re.search(r'^AH\s*=\s*"(.*)"\s*$', src, re.M).group(1)
+    raw = base64.b64decode(ah)
 
-    # Layer 1
-    b64_text = layer1_ah_base64()
-    zip_bytes = layer1_zip_bytes()
-    print(f"\n[LAYER 1] AH base64 string")
-    print(f"  base64 chars : {len(b64_text)}")
-    print(f"  decoded      : {len(zip_bytes)} bytes, magic {zip_bytes[:4]!r} (ZIP)")
+    print("=" * 66)
+    print(" sx.py decoded -- complete contents")
+    print("=" * 66)
+    print(f"sx.py size            : {os.path.getsize(SX):,} bytes")
+    print(f"  the AH base64 string: {len(ah):,} bytes ({len(ah)*100//os.path.getsize(SX)}% of the file)")
+    print(f"  everything else     : {os.path.getsize(SX)-len(ah):,} bytes (the 33 lines of code)")
+    print(f"AH decoded            : {len(raw):,} bytes  magic={raw[:4]!r}  <- a ZIP")
 
-    z = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    print(f"\n[LAYER 1] ZIP entries (CRC verified: {'ALL OK' if z.testzip() is None else 'FAILED'})")
-    os.makedirs(OUT_DIR, exist_ok=True)
-    for info in z.infolist():
-        data = z.read(info.filename)
-        out = os.path.join(OUT_DIR, info.filename)
-        with open(out, "wb") as f:
+    zf = zipfile.ZipFile(io.BytesIO(raw))
+    print(f"ZIP integrity         : {'all CRCs OK' if zf.testzip() is None else 'CORRUPT'}")
+
+    os.makedirs(OUT, exist_ok=True)
+    print("\nFiles inside the ZIP:")
+    for info in zf.infolist():
+        data = zf.read(info.filename)
+        with open(os.path.join(OUT, info.filename), "wb") as f:
             f.write(data)
-        print(f"  - {info.filename:<14} {info.file_size:>9,} bytes  -> extracted to no_decoded/")
+        kind = "Python script" if info.filename.endswith(".py") else "ARM64 machine code (Cython-compiled)"
+        print(f"  {info.filename:<14} {info.file_size:>9,} bytes  [{kind}]  -> no_decoded/")
 
-    # Layer 2
-    print(f"\n[LAYER 2] __main__.py -- base85 + exec() removed, plain source:")
-    print("-" * 68)
-    print(layer3_payload_source(), end="")
-    print("-" * 68)
-
-    # Layer 3
-    print(f"\n[LAYER 3] byte-array strings decoded:")
-    for arr, s in (
-        ([101,120,112,111,114,116,32,80,89,84,72,79,78,72,79,77,69,61], "export PYTHONHOME="),
-        ([32,38,38,32], " && "),
-        ([101,120,112,111,114,116,32,80,89,84,72,79,78,95,69,88,69,67,85,84,65,66,76,69,61], "export PYTHON_EXECUTABLE="),
-        ([46,47], "./"),
-    ):
-        assert bytes(arr).decode() == s, "decode mismatch"
-        print(f"  bytes({arr[:5]}...) -> {s!r}")
-
-    print(f"\n[RESULT] fully decoded payload (see payload_decoded):")
-    print('  os.system("export PYTHONHOME=" + sys.prefix')
-    print('            + " && export PYTHON_EXECUTABLE=" + sys.executable')
-    print('            + " && ./DEMO")')
-
-    # Layer 4
-    r = layer4_report()
-    print(f"\n[LAYER 4] DEMO -- terminal layer")
-    print(f"  size {r['size']:,} bytes | ELF: {r['elf']} | arch: {r['arch']}")
-    print(f"  built with Cython {r['cython']} | module init: {r['module']}()")
-    print("  Cython compiles Python to native machine code: no Python source")
-    print("  or bytecode exists inside it to decrypt. This is the floor.")
-
-    print(f"\nDone. Archive extracted to: {OUT_DIR}")
+    print("\nThe hidden script, decoded (this is all of it):")
+    print("-" * 66)
+    print(decode_hidden_script_from_sx())
+    print("-" * 66)
+    print("With the byte arrays decoded it reads:")
+    print('    os.system("export PYTHONHOME=" + sys.prefix')
+    print('              + " && export PYTHON_EXECUTABLE=" + sys.executable')
+    print('              + " && ./DEMO")')
+    print("\nEverything decodable in sx.py is now decoded above and in no_decoded/.")
 
 
 if __name__ == "__main__":
